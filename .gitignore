@@ -8,3 +8,7 @@ __pycache__/
 .ruff_cache/
 .coverage
 playwright/.cache/
+chats/*
+!chats/.gitkeep
+skills/*
+!skills/.gitkeep

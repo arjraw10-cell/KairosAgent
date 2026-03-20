@@ -2,6 +2,7 @@ import json
 import os
 import urllib.request
 
+
 def run(context, query, search_depth="basic", max_results=5):
     """
     Search the web using the Tavily API.
@@ -17,14 +18,14 @@ def run(context, query, search_depth="basic", max_results=5):
         "max_results": max_results,
         "include_answer": True,
     }
-    
+
     req = urllib.request.Request(
-        url, 
-        data=json.dumps(payload).encode("utf-8"), 
+        url,
+        data=json.dumps(payload).encode("utf-8"),
         headers={"Content-Type": "application/json"},
-        method="POST"
+        method="POST",
     )
-    
+
     try:
         with urllib.request.urlopen(req, timeout=30) as response:
             res_data = response.read().decode("utf-8")

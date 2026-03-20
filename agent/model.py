@@ -20,6 +20,7 @@ class ModelResponse:
     content: str | None
     tool_calls: list[ToolCall]
     raw_assistant_message: dict[str, Any]
+    usage: dict[str, int]
 
 
 class OpenAIChatModel:
@@ -64,7 +65,7 @@ class OpenAIChatModel:
         messages: list[dict[str, Any]],
         tool_schemas: list[dict[str, Any]],
     ) -> ModelResponse:
-        if self.provider == "openai":
+        if self.provider in {"openai", "llama_cpp"}:
             return self._complete_openai(messages, tool_schemas)
         return self._complete_gemini(messages, tool_schemas)
 
@@ -119,7 +120,18 @@ class OpenAIChatModel:
                 }
                 for tc in message.tool_calls
             ]
-        return ModelResponse(content=message.content, tool_calls=tool_calls, raw_assistant_message=raw_msg)
+        usage_obj = getattr(response, "usage", None)
+        usage = {
+            "prompt_tokens": int(getattr(usage_obj, "prompt_tokens", 0) or 0),
+            "completion_tokens": int(getattr(usage_obj, "completion_tokens", 0) or 0),
+            "total_tokens": int(getattr(usage_obj, "total_tokens", 0) or 0),
+        }
+        return ModelResponse(
+            content=message.content,
+            tool_calls=tool_calls,
+            raw_assistant_message=raw_msg,
+            usage=usage,
+        )
 
     def _complete_gemini(
         self,
@@ -230,10 +242,18 @@ class OpenAIChatModel:
             else:
                 raw_msg["_gemini_content"] = model_content
 
+        usage_meta = getattr(response, "usage_metadata", None)
+        usage = {
+            "prompt_tokens": int(getattr(usage_meta, "prompt_token_count", 0) or 0),
+            "completion_tokens": int(getattr(usage_meta, "candidates_token_count", 0) or 0),
+            "total_tokens": int(getattr(usage_meta, "total_token_count", 0) or 0),
+        }
+
         return ModelResponse(
             content=response_text,
             tool_calls=tool_calls,
             raw_assistant_message=raw_msg,
+            usage=usage,
         )
 
     def _sanitize_gemini_schema(self, node: Any) -> Any:

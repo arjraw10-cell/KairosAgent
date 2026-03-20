@@ -31,11 +31,33 @@ class Agent:
         self._last_action_signature: str | None = None
         self._last_action_output: str | None = None
         self._consecutive_repeat_count = 0
+        self.last_usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+        self.total_usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+
+    def load_session(
+        self,
+        messages: list[dict[str, Any]],
+        total_usage: dict[str, int] | None = None,
+    ) -> None:
+        self.messages = messages
+        if total_usage is not None:
+            self.total_usage = {
+                "prompt_tokens": int(total_usage.get("prompt_tokens", 0) or 0),
+                "completion_tokens": int(total_usage.get("completion_tokens", 0) or 0),
+                "total_tokens": int(total_usage.get("total_tokens", 0) or 0),
+            }
+
+    def _add_usage(self, usage: dict[str, int]) -> None:
+        for key in self.last_usage:
+            self.last_usage[key] += int(usage.get(key, 0) or 0)
+            self.total_usage[key] += int(usage.get(key, 0) or 0)
 
     def ask(self, user_message: str) -> str:
+        self.last_usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
         self.messages.append({"role": "user", "content": user_message})
         for _ in range(self.max_steps):
             result = self.model.complete(self.messages, self.registry.tool_schemas())
+            self._add_usage(result.usage)
             self.messages.append(result.raw_assistant_message)
 
             if not result.tool_calls:

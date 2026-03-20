@@ -54,11 +54,26 @@ LLAMA_CPP_API_KEY="not-needed"
 python -m agent.cli --use-llama false --root .
 ```
 
+Run the agent against a different workspace without exposing the agent repo itself:
+
+```powershell
+python -m agent.cli --workspace C:\path\to\project
+```
+
+Resume a saved chat session:
+
+```powershell
+python -m agent.cli --use-llama false --root . --session main --resume true
+```
+
 Local `llama.cpp` usage:
 
 ```powershell
 python -m agent.cli --use-llama true --root .
 ```
+
+Chats are saved under `chats/SESSION_NAME.json`. The CLI prints per-turn and session token totals after each response.
+Skills and chats stay under the agent repo, while file and shell tools operate inside the configured workspace.
 
 ## Browser Usage Pattern
 

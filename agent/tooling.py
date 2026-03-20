@@ -10,6 +10,7 @@ from typing import Any, Callable
 @dataclass
 class ToolContext:
     root_dir: Path
+    agent_home_dir: Path
     runtime_state: dict[str, Any]
 
 
@@ -19,6 +20,7 @@ class ToolSpec:
     description: str
     input_schema: dict[str, Any]
     func: Callable[..., dict[str, Any]]
+    origin: str = "base"
 
     def openai_schema(self) -> dict[str, Any]:
         return {
@@ -48,21 +50,32 @@ class ToolRegistry:
         self._context = context
         self._tools: dict[str, ToolSpec] = {}
 
-    def register(self, func: Callable[..., dict[str, Any]]) -> None:
+    def register(self, func: Callable[..., dict[str, Any]], origin: str = "base") -> None:
         spec = getattr(func, "__tool_spec__", None)
         if spec is None:
             raise ValueError(f"Function {func.__name__} is missing @tool metadata.")
         if spec.name in self._tools:
             raise ValueError(f"Tool already registered: {spec.name}")
+        spec.origin = origin
         self._tools[spec.name] = spec
 
-    def register_module(self, module: Any) -> None:
+    def register_module(self, module: Any, origin: str = "base") -> None:
         for _, value in inspect.getmembers(module):
             if callable(value) and hasattr(value, "__tool_spec__"):
-                self.register(value)
+                self.register(value, origin=origin)
 
     def tool_schemas(self) -> list[dict[str, Any]]:
         return [tool.openai_schema() for tool in self._tools.values()]
+
+    def list_tools(self) -> list[dict[str, str]]:
+        return [
+            {
+                "name": tool.name,
+                "description": tool.description,
+                "origin": tool.origin,
+            }
+            for tool in self._tools.values()
+        ]
 
     def execute(self, tool_name: str, arguments: dict[str, Any]) -> str:
         spec = self._tools.get(tool_name)
