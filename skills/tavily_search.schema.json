@@ -1,0 +1,32 @@
+{
+  "tool_name": "tavily_search",
+  "description": "Search the web using Tavily API for high-quality, AI-optimized results.",
+  "function_name": "run",
+  "parameters_schema": {
+    "properties": {
+      "query": {
+        "description": "The search query string.",
+        "type": "string"
+      },
+      "max_results": {
+        "default": 5,
+        "type": "integer",
+        "description": "The maximum number of search results to return."
+      },
+      "search_depth": {
+        "enum": [
+          "basic",
+          "advanced"
+        ],
+        "default": "basic",
+        "type": "string",
+        "description": "The depth of the search: 'basic' or 'advanced'."
+      }
+    },
+    "type": "object",
+    "required": [
+      "query"
+    ]
+  },
+  "source_file": "C:\\Users\\arjra\\Universal\\Documents\\Agent\\skills\\tavily_search.py"
+}
