@@ -48,6 +48,17 @@ LLAMA_CPP_MODEL="local-model"
 LLAMA_CPP_API_KEY="not-needed"
 ```
 
+Optional cache settings:
+
+```env
+GEMINI_EXPLICIT_CACHE="true"
+GEMINI_CACHE_TTL="300s"
+GEMINI_CACHE_MIN_CHARS="12000"
+OPENAI_PROMPT_CACHE_RETENTION="24h"
+```
+
+`GEMINI_EXPLICIT_CACHE` reuses the stable prompt prefix with Gemini when the serialized cached portion is large enough. The CLI token summary now prints `cached=` so you can confirm whether cache hits are happening.
+
 ## Run
 
 ```powershell

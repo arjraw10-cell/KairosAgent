@@ -119,6 +119,13 @@ def _browser_state(context: ToolContext, headless: bool = False) -> dict[str, An
     return state
 
 
+def _existing_browser_state(context: ToolContext) -> dict[str, Any] | None:
+    state = context.runtime_state.get("browser")
+    if not state or state.get("worker") is None:
+        return None
+    return state
+
+
 def _record_browser_action(state: dict[str, Any], action: str, details: dict[str, Any]) -> None:
     entry = {
         "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
@@ -566,7 +573,9 @@ def browser_snapshot(
     },
 )
 def browser_get_snapshot(context: ToolContext, snapshot_id: str, max_chars: int = 12000) -> dict[str, Any]:
-    state = _browser_state(context)
+    state = _existing_browser_state(context)
+    if state is None:
+        raise ValueError("No active browser session.")
     if snapshot_id not in state["snapshots"]:
         raise ValueError(f"Unknown snapshot_id: {snapshot_id}")
     raw = state["snapshots"][snapshot_id]
@@ -591,7 +600,9 @@ def browser_get_snapshot(context: ToolContext, snapshot_id: str, max_chars: int 
     },
 )
 def browser_history(context: ToolContext, limit: int = 20) -> dict[str, Any]:
-    state = _browser_state(context)
+    state = _existing_browser_state(context)
+    if state is None:
+        return {"count": 0, "items": []}
     history = state["history"][-limit:]
     return {"count": len(history), "items": history}
 

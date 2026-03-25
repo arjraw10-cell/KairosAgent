@@ -10,6 +10,10 @@ from agent.security import resolve_path
 from agent.tooling import ToolContext, tool
 
 
+def _skills_root(context: ToolContext) -> Path:
+    return (context.agent_home_dir / "skills").resolve()
+
+
 def _require_registry(context: ToolContext) -> Any:
     registry = context.runtime_state.get("registry")
     if registry is None:
@@ -28,10 +32,36 @@ def _load_module_from_path(file_path: Path) -> Any:
 
 
 def _resolve_skill_path(context: ToolContext, file_path: str) -> Path:
-    candidate = Path(file_path)
-    if candidate.is_absolute():
-        return resolve_path(context.agent_home_dir, str(candidate))
-    return resolve_path(context.agent_home_dir, file_path)
+    return resolve_path(_skills_root(context), file_path)
+
+
+def _resolve_loaded_skill_source(
+    skills_dir: Path,
+    schema_file: Path,
+    source_file_value: str | None,
+) -> Path:
+    skills_root = skills_dir.resolve()
+    candidates: list[Path] = []
+    if source_file_value:
+        source_candidate = Path(source_file_value)
+        if source_candidate.is_absolute():
+            candidates.append(source_candidate)
+        else:
+            candidates.append((schema_file.parent / source_candidate).resolve())
+    candidates.append(schema_file.with_name(schema_file.name.replace(".schema.json", ".py")))
+
+    for candidate in candidates:
+        resolved = candidate.resolve()
+        try:
+            resolved.relative_to(skills_root)
+        except ValueError:
+            continue
+        if resolved.exists() and resolved.suffix.lower() == ".py":
+            return resolved
+
+    raise FileNotFoundError(
+        f"No valid in-skills source file found for schema: {schema_file}"
+    )
 
 
 def _build_dynamic_tool(
@@ -119,10 +149,9 @@ def create_skill_tool(
             )
 
         dynamic_tool = _build_dynamic_tool(tool_name, description, parameters_schema, raw_func)
-        registry.register(dynamic_tool, origin="agent_made_skill")
-
         abs_schema.write_text(json.dumps(skill_meta, indent=2, ensure_ascii=True), encoding="utf-8")
         schema_written = True
+        registry.register(dynamic_tool, origin="agent_made_skill")
     except Exception:
         if code_written:
             if previous_code is None:
@@ -152,24 +181,18 @@ def load_skills(registry: Any, skills_dir: Path) -> None:
     if not skills_dir.exists() or not skills_dir.is_dir():
         return
 
-    for schema_file in skills_dir.glob("*.schema.json"):
+    for schema_file in skills_dir.rglob("*.schema.json"):
         try:
             meta = json.loads(schema_file.read_text(encoding="utf-8"))
             tool_name = meta["tool_name"]
             description = meta["description"]
             function_name = meta.get("function_name", "run")
             parameters_schema = meta["parameters_schema"]
-            source_file = Path(meta["source_file"])
-
-            # Fallback if the path in meta is no longer valid
-            if not source_file.is_absolute():
-                source_file = schema_file.parent / source_file.name
-            if not source_file.exists():
-                source_file = schema_file.with_name(schema_file.name.replace(".schema.json", ".py"))
-
-            if not source_file.exists():
-                print(f"Warning: Source file for skill '{tool_name}' not found at {source_file}")
-                continue
+            source_file = _resolve_loaded_skill_source(
+                skills_dir=skills_dir,
+                schema_file=schema_file,
+                source_file_value=meta.get("source_file"),
+            )
 
             module = _load_module_from_path(source_file)
             raw_func = getattr(module, function_name, None)

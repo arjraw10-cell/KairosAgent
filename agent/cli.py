@@ -65,6 +65,19 @@ def _utc_now() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
 
 
+def _json_safe(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {
+            str(key): _json_safe(item)
+            for key, item in value.items()
+        }
+    if isinstance(value, (list, tuple)):
+        return [_json_safe(item) for item in value]
+    if isinstance(value, bytes):
+        return value.hex()
+    return value
+
+
 def _save_session(agent: Agent, session_path: Path, args: argparse.Namespace) -> None:
     session_path.parent.mkdir(parents=True, exist_ok=True)
     payload = {
@@ -76,7 +89,10 @@ def _save_session(agent: Agent, session_path: Path, args: argparse.Namespace) ->
         "messages": agent.messages,
         "token_totals": agent.total_usage,
     }
-    session_path.write_text(json.dumps(payload, indent=2, ensure_ascii=True), encoding="utf-8")
+    session_path.write_text(
+        json.dumps(_json_safe(payload), indent=2, ensure_ascii=True),
+        encoding="utf-8",
+    )
 
 
 def _load_session(agent: Agent, session_path: Path) -> bool:
@@ -125,7 +141,7 @@ def _print_header(
         + _styled(provider_label, FG_SOFT)
         + _styled(" - model ", FG_MUTED)
         + _styled(f"{args.model}", FG_SOFT)
-        + _styled(" - session main", FG_GOLD)
+        + _styled(f" - session {args.session}", FG_GOLD)
     )
     print(
         _styled(" workspace ", FG_MUTED)
@@ -307,7 +323,8 @@ def main() -> None:
                 + _styled(
                     (
                         f"turn total={usage['total_tokens']} "
-                        f"(prompt={usage['prompt_tokens']}, completion={usage['completion_tokens']})"
+                        f"(prompt={usage['prompt_tokens']}, completion={usage['completion_tokens']}, "
+                        f"cached={usage.get('cached_prompt_tokens', 0)})"
                     ),
                     FG_SOFT,
                 )
@@ -318,7 +335,8 @@ def main() -> None:
                 + _styled(
                     (
                         f"tokens total={total_usage['total_tokens']} "
-                        f"(prompt={total_usage['prompt_tokens']}, completion={total_usage['completion_tokens']})"
+                        f"(prompt={total_usage['prompt_tokens']}, completion={total_usage['completion_tokens']}, "
+                        f"cached={total_usage.get('cached_prompt_tokens', 0)})"
                     ),
                     FG_SOFT,
                 )
