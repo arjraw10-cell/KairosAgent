@@ -212,16 +212,21 @@ class AgentGateway:
         return latest_dir.name
 
     async def close(self) -> None:
-        for session in self._sessions.values():
-            browser_state = session.context.runtime_state.get("browser")
-            if browser_state:
-                try:
-                    if browser_state["browser"]:
-                        await browser_state["browser"].close()
-                    await browser_state["playwright"].stop()
-                except Exception:
-                    pass
+        for session in list(self._sessions.values()):
+            await self._dispose_session(session)
         self._sessions.clear()
+
+    async def close_session(self, address: GatewayAddress, mode: str | None = None) -> bool:
+        effective_mode = mode or self.config.mode
+        session_name = self._resolve_session_name(address, resume=False)
+        session_key = f"{effective_mode}:{session_name}"
+        session = self._sessions.pop(session_key, None)
+        if session is None:
+            return False
+
+        self._save_session(session)
+        await self._dispose_session(session)
+        return True
 
     def interrupt_session(self, address: GatewayAddress, mode: str | None = None) -> bool:
         effective_mode = mode or self.config.mode
@@ -359,6 +364,21 @@ class AgentGateway:
         
         return True
 
+    async def _dispose_session(self, session: _GatewaySession) -> None:
+        browser_state = session.context.runtime_state.get("browser")
+        if browser_state:
+            try:
+                if browser_state["browser"]:
+                    await browser_state["browser"].close()
+                await browser_state["playwright"].stop()
+            except Exception:
+                pass
+
+        try:
+            session.agent.model.close()
+        except Exception:
+            pass
+
 # --- FastAPI App ---
 
 app = FastAPI(title="Kairos Gateway")
@@ -374,6 +394,11 @@ async def handle(request: GatewayRequest):
 @app.post("/interrupt")
 async def interrupt(request: GatewayRequest):
     ok = gateway.interrupt_session(request.address, mode=request.mode)
+    return {"ok": ok}
+
+@app.post("/sessions/close")
+async def close_session(request: GatewayRequest):
+    ok = await gateway.close_session(request.address, mode=request.mode)
     return {"ok": ok}
 
 @app.get("/config")

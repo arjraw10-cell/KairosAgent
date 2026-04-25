@@ -79,6 +79,11 @@ class OpenAIChatModel:
             return self._complete_openai(messages, tool_schemas)
         return self._complete_gemini(messages, tool_schemas)
 
+    def close(self) -> None:
+        if self.provider != "gemini":
+            return
+        self._delete_gemini_cache()
+
     def _complete_openai(
         self,
         messages: list[dict[str, Any]],
@@ -398,6 +403,19 @@ class OpenAIChatModel:
                 self._client.caches.delete(name=previous_cache_name)
             except Exception:
                 pass
+
+    def _delete_gemini_cache(self) -> None:
+        if not self._gemini_cache_name:
+            self._gemini_cache_key = None
+            return
+
+        try:
+            self._client.caches.delete(name=self._gemini_cache_name)
+        except Exception:
+            pass
+        finally:
+            self._gemini_cache_name = None
+            self._gemini_cache_key = None
 
     def _serialize_gemini_cache_payload(
         self,

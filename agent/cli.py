@@ -114,6 +114,19 @@ def show_help():
     console.print(Panel(table, border_style="#444444", expand=False))
 
 
+def _close_remote_session(client: httpx.Client, session_name: str, mode: str) -> None:
+    payload = {
+        "address": {"platform": "cli", "session": session_name},
+        "text": "",
+        "resume": True,
+        "mode": mode,
+    }
+    try:
+        client.post(f"{GATEWAY_URL}/sessions/close", json=payload)
+    except Exception:
+        pass
+
+
 def run_chat(session_name: str, mode: str, resume: bool):
     completer = WordCompleter([
         '/help', '/exit', '/quit', '/clear', '/mode personalized', '/mode unbiased', '/model', '/new', '/resume', '/session'
@@ -146,6 +159,7 @@ def run_chat(session_name: str, mode: str, resume: bool):
                     multiline=False
                 ).strip()
             except (EOFError, KeyboardInterrupt):
+                _close_remote_session(client, current_session, current_mode)
                 console.print()
                 break
 
@@ -154,6 +168,7 @@ def run_chat(session_name: str, mode: str, resume: bool):
             text_lower = user_input.lower()
             
             if text_lower in {"/exit", "/quit", "exit", "quit"}: 
+                _close_remote_session(client, current_session, current_mode)
                 break
             elif text_lower == "/help":
                 show_help()
@@ -183,12 +198,14 @@ def run_chat(session_name: str, mode: str, resume: bool):
                 else:
                     target_mode = parts[1].strip().lower()
                     if target_mode in ["personalized", "unbiased"]:
+                        _close_remote_session(client, current_session, current_mode)
                         current_mode = target_mode
                         console.print(f"[bold green]Mode switched to {current_mode}[/bold green]")
                     else:
                         console.print("[bold red]Invalid mode. Use 'personalized' or 'unbiased'.[/bold red]")
                 continue
             elif text_lower.startswith("/new"):
+                _close_remote_session(client, current_session, current_mode)
                 should_resume = False
                 try:
                     current_session = client.get(f"{GATEWAY_URL}/sessions/next").json()['session']
@@ -197,6 +214,7 @@ def run_chat(session_name: str, mode: str, resume: bool):
                     console.print(f"[bold red]Error connecting to gateway: {e}[/bold red]")
                 continue
             elif text_lower.startswith("/resume"):
+                _close_remote_session(client, current_session, current_mode)
                 parts = user_input.split(" ", 1)
                 should_resume = True
                 try:
