@@ -4,21 +4,28 @@ This project provides a small tool-calling agent scaffold with:
 
 - `read_file`
 - `write_file`
-- `edit_file` (`replace_block_with_context`)
-- `run_powershell`
+- `edit_file`
+- `shell`
+- `change_directory`
+- `get_current_directory`
 - Playwright browser tools:
   - `browser_navigate`
-  - `browser_scan` (compact summary + interactable elements)
   - `browser_click`
   - `browser_type`
-  - `browser_wait_for`
   - `browser_extract`
-  - `browser_snapshot` (on-demand deep detail)
-  - `browser_get_snapshot`
-  - `browser_history`
+  - `browser_snapshot`
 - Dynamic skill tools:
-  - `create_skill_tool`
+  - `register_skill`
   - `list_current_tools`
+- Customization tools:
+  - `update_memory`
+  - `update_preferences`
+  - `update_identity`
+- Runtime tools:
+  - `run_subagent`
+  - `reload_tools`
+
+It now routes messages through an `AgentGateway`, so the CLI is just one transport. Other transports such as Telegram can forward inbound text into the same gateway and reuse the same session/runtime behavior.
 
 ## Setup
 
@@ -74,7 +81,7 @@ python -m agent.cli --workspace C:\path\to\project
 Resume a saved chat session:
 
 ```powershell
-python -m agent.cli --use-llama false --root . --session main --resume true
+python -m agent.cli --use-llama false --root . --session 2 --resume true
 ```
 
 Local `llama.cpp` usage:
@@ -83,18 +90,49 @@ Local `llama.cpp` usage:
 python -m agent.cli --use-llama true --root .
 ```
 
-Chats are saved under `chats/SESSION_NAME.json`. The CLI prints per-turn and session token totals after each response.
-Skills and chats stay under the agent repo, while file and shell tools operate inside the configured workspace.
+Chats are saved as numbered JSON transcripts under `chats/`, for example `1.json`, `2.json`, `3.json`. Starting a fresh CLI chat without `--session` automatically picks the next available number. Use `--session N --resume true` to continue a specific saved chat. The CLI prints per-turn and session token totals after each response.
+The agent tracks a current working directory. File and shell tools resolve relative paths from that directory, and the working directory may be moved between the configured workspace and the agent home.
+
+## Gateway
+
+`agent.gateway.AgentGateway` is the messaging boundary for the runtime.
+
+- Transports send a `GatewayRequest` with a `GatewayAddress` plus message text.
+- The gateway resolves or creates the session runtime, invokes the agent, and persists the transcript.
+- The CLI now just reads stdin and forwards messages into the gateway with `platform="cli"`, using auto-numbered sessions when `--session` is omitted.
+
+Minimal transport example:
+
+```python
+from pathlib import Path
+from agent.gateway import AgentGateway, GatewayAddress, GatewayRequest
+
+gateway = AgentGateway.from_args(
+    workspace_dir=Path(".").resolve(),
+    agent_home_dir=Path(".").resolve(),
+    use_llama=False,
+    max_steps=20,
+)
+
+response = gateway.handle(
+    GatewayRequest(
+        address=GatewayAddress(platform="telegram", session="chat-123"),
+        text="Summarize this repo",
+        resume=True,
+    )
+)
+
+print(response.text)
+gateway.close()
+```
 
 ## Browser Usage Pattern
 
 1. Call `browser_navigate`.
-2. Call `browser_scan` first (small context footprint).
-3. Interact via `browser_click` / `browser_type` using returned `element_id`.
-4. Use `browser_wait_for` before actions on dynamic pages.
-5. Use `browser_extract` for targeted content pull instead of full-page snapshot.
-6. Only call `browser_snapshot` if exact page structure is required.
-7. Use `browser_history` to inspect recent actions and avoid loops.
+2. Use `browser_snapshot` when you need a quick list of interactive elements.
+3. Interact via `browser_click` / `browser_type` using selectors.
+4. Use `browser_extract` when you want page text instead of structure.
+5. Re-run `browser_snapshot` after navigation or interaction if the page changed.
 
 ## Adding a Tool
 
@@ -117,16 +155,19 @@ def echo(context: ToolContext, text: str) -> dict:
     return {"text": text}
 ```
 
-## Dynamic Skill Creator
+## Dynamic Skills
 
-Use `create_skill_tool` to:
-1. Write skill code to a Python file path you choose.
-2. Write tool metadata/schema to a sibling `.schema.json` file.
-3. Register the new tool in the current running agent session.
+Recommended flow:
 
-The code should define a callable function (default name: `run`) with signature:
+1. Call `change_directory` with `location="skills_root"`.
+2. Use `write_file` / `edit_file` to create or update the skill folder and its files.
+3. Call `register_skill` with the skill folder name to load or reload it in the current session.
 
-```python
-def run(context, **kwargs) -> dict:
-    ...
-```
+Explainer skills need `skill.md`.
+
+Executor skills typically include:
+
+- `skill.md`
+- `schema.json`
+- `start.bat`
+- supporting code files such as `run.py`

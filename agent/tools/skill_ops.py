@@ -1,214 +1,190 @@
 from __future__ import annotations
 
-import importlib.util
 import json
-import uuid
+import os
+import subprocess
 from pathlib import Path
 from typing import Any
 
-from agent.security import resolve_path
-from agent.tooling import ToolContext, tool
-
+from agent.tooling import ToolContext, tool, ToolRegistry
 
 def _skills_root(context: ToolContext) -> Path:
     return (context.agent_home_dir / "skills").resolve()
 
-
-def _require_registry(context: ToolContext) -> Any:
+def _require_registry(context: ToolContext) -> ToolRegistry:
     registry = context.runtime_state.get("registry")
     if registry is None:
         raise RuntimeError("Tool registry is not available in runtime_state.")
     return registry
 
+def _normalize_schema(node: Any) -> Any:
+    """Force properties to be dictionaries and add missing required fields."""
+    if not isinstance(node, dict):
+        return node
+    
+    # If this is a properties container, normalize its children
+    if "properties" in node and isinstance(node["properties"], dict):
+        new_props = {}
+        for k, v in node["properties"].items():
+            if isinstance(v, str):
+                # Convert "prop": "description" -> "prop": {"type": "string", "description": "description"}
+                new_props[k] = {"type": "string", "description": v}
+            elif isinstance(v, dict):
+                new_props[k] = _normalize_schema(v)
+            else:
+                new_props[k] = v
+        node["properties"] = new_props
 
-def _load_module_from_path(file_path: Path) -> Any:
-    module_name = f"dynamic_skill_{uuid.uuid4().hex}"
-    spec = importlib.util.spec_from_file_location(module_name, str(file_path))
-    if spec is None or spec.loader is None:
-        raise RuntimeError(f"Unable to load module from: {file_path}")
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+    # Ensure type is present for objects and properties
+    if "properties" in node and "type" not in node:
+        node["type"] = "object"
+    
+    # Recursive for nested objects
+    for k, v in node.items():
+        if isinstance(v, dict) and k != "properties":
+            node[k] = _normalize_schema(v)
+            
+    return node
 
-
-def _resolve_skill_path(context: ToolContext, file_path: str) -> Path:
-    return resolve_path(_skills_root(context), file_path)
-
-
-def _resolve_loaded_skill_source(
-    skills_dir: Path,
-    schema_file: Path,
-    source_file_value: str | None,
-) -> Path:
-    skills_root = skills_dir.resolve()
-    candidates: list[Path] = []
-    if source_file_value:
-        source_candidate = Path(source_file_value)
-        if source_candidate.is_absolute():
-            candidates.append(source_candidate)
-        else:
-            candidates.append((schema_file.parent / source_candidate).resolve())
-    candidates.append(schema_file.with_name(schema_file.name.replace(".schema.json", ".py")))
-
-    for candidate in candidates:
-        resolved = candidate.resolve()
+def _clean_schema(node: Any) -> Any:
+    """Recursively ensure that no parts of the schema are stringified JSON and normalize structure."""
+    if isinstance(node, str) and node.strip().startswith(("{", "[")):
         try:
-            resolved.relative_to(skills_root)
-        except ValueError:
-            continue
-        if resolved.exists() and resolved.suffix.lower() == ".py":
-            return resolved
+            parsed = json.loads(node)
+            if isinstance(parsed, (dict, list)):
+                return _clean_schema(parsed)
+        except (json.JSONDecodeError, TypeError):
+            pass
+    
+    if isinstance(node, dict):
+        cleaned = {k: _clean_schema(v) for k, v in node.items()}
+        return _normalize_schema(cleaned)
+    
+    if isinstance(node, list):
+        return [_clean_schema(i) for i in node]
+    
+    return node
 
-    raise FileNotFoundError(
-        f"No valid in-skills source file found for schema: {schema_file}"
-    )
+def _run_executor(context: ToolContext, skill_dir: Path, **kwargs: Any) -> dict[str, Any]:
+    # Set up environment variables
+    env = os.environ.copy()
+    env["AGENT_WORKSPACE"] = str(context.root_dir)
+    env["AGENT_SKILL_DIR"] = str(skill_dir)
+    env["AGENT_HOME_DIR"] = str(context.agent_home_dir)
+    
+    # Start.bat should be in skill_dir
+    bat_path = skill_dir / "start.bat"
+    if not bat_path.exists():
+        raise FileNotFoundError(f"Executor skill missing start.bat in {skill_dir}")
 
+    # Prepare input for the script via env var
+    env["SKILL_INPUT_JSON"] = json.dumps(kwargs)
 
-def _build_dynamic_tool(
-    tool_name: str,
-    description: str,
-    parameters_schema: dict[str, Any],
-    raw_func: Any,
-) -> Any:
+    try:
+        result = subprocess.run(
+            [str(bat_path)],
+            capture_output=True,
+            text=True,
+            cwd=str(skill_dir),
+            env=env,
+            shell=True,
+            check=False,
+        )
+        return {
+            "stdout": result.stdout,
+            "stderr": result.stderr,
+            "exit_code": result.returncode,
+            "ok": result.returncode == 0
+        }
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}
+
+def _build_executor_tool(tool_name: str, description: str, parameters_schema: dict[str, Any], skill_dir: Path) -> Any:
     @tool(name=tool_name, description=description, input_schema=parameters_schema)
-    def dynamic_tool(ctx: ToolContext, **kwargs: Any) -> dict[str, Any]:
-        result = raw_func(ctx, **kwargs)
-        if not isinstance(result, dict):
-            raise TypeError(
-                f"Dynamic skill '{tool_name}' must return a dict. Got: {type(result).__name__}"
-            )
-        return result
+    def executor_tool(ctx: ToolContext, **kwargs: Any) -> dict[str, Any]:
+        return _run_executor(ctx, skill_dir, **kwargs)
+    return executor_tool
 
-    return dynamic_tool
+def _load_skill_path(registry: ToolRegistry, skill_path: Path) -> dict[str, Any]:
+    if not skill_path.is_dir():
+        raise FileNotFoundError(f"Skill directory not found: {skill_path}")
+    if skill_path.name.startswith("__"):
+        raise ValueError(f"Reserved skill directory name: {skill_path.name}")
+
+    skill_md_path = skill_path / "skill.md"
+    if not skill_md_path.exists():
+        raise FileNotFoundError(f"Skill is missing skill.md: {skill_path}")
+
+    skill_md = skill_md_path.read_text(encoding="utf-8")
+    schema_path = skill_path / "schema.json"
+
+    if schema_path.exists():
+        schema = _clean_schema(json.loads(schema_path.read_text(encoding="utf-8")))
+        tool_name = schema.get("name") or skill_path.name
+        params = (
+            schema.get("parameters", schema)
+            if any(key in schema for key in ["parameters", "type"])
+            else schema
+        )
+        desc = schema.get("description", tool_name)
+        tool_fn = _build_executor_tool(tool_name, desc, params, skill_path)
+        registry.register(tool_fn, origin="agent_made_skill")
+        return {
+            "name": skill_path.name,
+            "type": "Executor",
+            "tool_name": tool_name,
+            "path": str(skill_path),
+        }
+
+    registry.register_explainer(skill_path.name, skill_md)
+    return {
+        "name": skill_path.name,
+        "type": "Explainer",
+        "path": str(skill_path),
+    }
 
 
 @tool(
-    name="create_skill_tool",
+    name="register_skill",
     description=(
-        "Create a new tool skill by writing a Python source file and JSON schema file, "
-        "then register it into the current agent toolset."
+        "Register or reload a skill that already exists under the skills directory. "
+        "Typical flow: change_directory to skills_root, write the skill files, then call register_skill."
     ),
     input_schema={
         "type": "object",
         "properties": {
-            "tool_name": {"type": "string"},
-            "description": {"type": "string"},
-            "file_path": {"type": "string"},
-            "function_name": {"type": "string", "default": "run"},
-            "code": {"type": "string"},
-            "parameters_schema": {"type": "object"},
-            "overwrite": {"type": "boolean", "default": False},
+            "name": {
+                "type": "string",
+                "description": "Skill folder name under the skills directory.",
+            },
         },
-        "required": ["tool_name", "description", "file_path", "code", "parameters_schema"],
+        "required": ["name"],
         "additionalProperties": False,
     },
 )
-def create_skill_tool(
-    context: ToolContext,
-    tool_name: str,
-    description: str,
-    file_path: str,
-    code: str,
-    parameters_schema: dict[str, Any],
-    function_name: str = "run",
-    overwrite: bool = False,
-) -> dict[str, Any]:
+def register_skill(context: ToolContext, name: str) -> dict[str, Any]:
     registry = _require_registry(context)
-    abs_file = _resolve_skill_path(context, file_path)
-    if abs_file.suffix.lower() != ".py":
-        raise ValueError("file_path must end with .py")
+    skill_dir = _skills_root(context) / name
+    result = _load_skill_path(registry, skill_dir)
+    return {"status": "registered", **result}
 
-    abs_schema = abs_file.with_suffix(".schema.json")
-    if (abs_file.exists() or abs_schema.exists()) and not overwrite:
-        raise FileExistsError(
-            f"Skill files already exist. Use overwrite=true to replace: {file_path}"
-        )
-
-    skill_meta = {
-        "tool_name": tool_name,
-        "description": description,
-        "function_name": function_name,
-        "parameters_schema": parameters_schema,
-        "source_file": str(abs_file),
-    }
-
-    abs_file.parent.mkdir(parents=True, exist_ok=True)
-    previous_code = abs_file.read_text(encoding="utf-8") if abs_file.exists() else None
-    previous_schema = abs_schema.read_text(encoding="utf-8") if abs_schema.exists() else None
-    code_written = False
-    schema_written = False
-    try:
-        abs_file.write_text(code, encoding="utf-8")
-        code_written = True
-
-        module = _load_module_from_path(abs_file)
-        raw_func = getattr(module, function_name, None)
-        if raw_func is None or not callable(raw_func):
-            raise ValueError(
-                f"Function '{function_name}' not found or not callable in {file_path}"
-            )
-
-        dynamic_tool = _build_dynamic_tool(tool_name, description, parameters_schema, raw_func)
-        abs_schema.write_text(json.dumps(skill_meta, indent=2, ensure_ascii=True), encoding="utf-8")
-        schema_written = True
-        registry.register(dynamic_tool, origin="agent_made_skill")
-    except Exception:
-        if code_written:
-            if previous_code is None:
-                if abs_file.exists():
-                    abs_file.unlink()
-            else:
-                abs_file.write_text(previous_code, encoding="utf-8")
-        if schema_written:
-            if previous_schema is None:
-                if abs_schema.exists():
-                    abs_schema.unlink()
-            else:
-                abs_schema.write_text(previous_schema, encoding="utf-8")
-        raise
-
-    return {
-        "registered": True,
-        "tool_name": tool_name,
-        "function_name": function_name,
-        "source_path": str(abs_file),
-        "schema_path": str(abs_schema),
-    }
-
-
-def load_skills(registry: Any, skills_dir: Path) -> None:
-    """Scan directory for .schema.json files and register them as tools."""
+def load_skills(registry: ToolRegistry, skills_dir: Path) -> None:
     if not skills_dir.exists() or not skills_dir.is_dir():
         return
 
-    for schema_file in skills_dir.rglob("*.schema.json"):
+    for skill_path in skills_dir.iterdir():
+        if not skill_path.is_dir() or skill_path.name.startswith("__"):
+            continue
         try:
-            meta = json.loads(schema_file.read_text(encoding="utf-8"))
-            tool_name = meta["tool_name"]
-            description = meta["description"]
-            function_name = meta.get("function_name", "run")
-            parameters_schema = meta["parameters_schema"]
-            source_file = _resolve_loaded_skill_source(
-                skills_dir=skills_dir,
-                schema_file=schema_file,
-                source_file_value=meta.get("source_file"),
-            )
-
-            module = _load_module_from_path(source_file)
-            raw_func = getattr(module, function_name, None)
-            if raw_func is None or not callable(raw_func):
-                print(f"Warning: Function '{function_name}' not found in {source_file}")
-                continue
-
-            dynamic_tool = _build_dynamic_tool(tool_name, description, parameters_schema, raw_func)
-            registry.register(dynamic_tool, origin="agent_made_skill")
+            _load_skill_path(registry, skill_path)
+        except FileNotFoundError:
+            continue
         except Exception as exc:
-            print(f"Error loading skill from {schema_file}: {exc}")
-
+            print(f"Error loading skill {skill_path.name}: {exc}")
 
 @tool(
     name="list_current_tools",
-    description="List the currently registered tool names available to the agent.",
+    description="List all registered tools and knowledge explainers (Mental Supplements).",
     input_schema={
         "type": "object",
         "properties": {},
@@ -218,12 +194,16 @@ def load_skills(registry: Any, skills_dir: Path) -> None:
 def list_current_tools(context: ToolContext) -> dict[str, Any]:
     registry = _require_registry(context)
     tools = registry.list_tools()
+    explainers = registry.list_explainers()
+    
     base_tools = sorted([item["name"] for item in tools if item["origin"] == "base"])
-    agent_made_skills = sorted(
-        [item["name"] for item in tools if item["origin"] == "agent_made_skill"]
-    )
+    agent_made_executors = sorted([item["name"] for item in tools if item["origin"] == "agent_made_skill"])
+    explainer_names = sorted([item["name"] for item in explainers])
+    
     return {
-        "count": len(tools),
+        "tool_count": len(tools),
+        "explainer_count": len(explainers),
         "base_tools": base_tools,
-        "agent_made_skills": agent_made_skills,
+        "executor_skills": agent_made_executors,
+        "explainer_skills": explainer_names,
     }

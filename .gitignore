@@ -12,3 +12,5 @@ chats/*
 !chats/.gitkeep
 skills/*
 !skills/.gitkeep
+customization/*
+!customization/.gitkeep

@@ -63,9 +63,9 @@ class OpenAIChatModel:
                 raise ImportError(
                     "google-genai package is not installed. Run: pip install -r requirements.txt"
                 ) from exc
-            gemini_key = os.getenv("GEMINI_API_KEY")
+            gemini_key = api_key or os.getenv("GEMINI_API_KEY") or os.getenv("API_KEY")
             if not gemini_key:
-                raise ValueError("GEMINI_API_KEY is not set.")
+                raise ValueError("GEMINI_API_KEY or API_KEY is not set.")
             self._client = genai.Client(api_key=gemini_key)
         else:
             raise ValueError(f"Unsupported provider: {provider}")
@@ -337,16 +337,16 @@ class OpenAIChatModel:
         declarations: list[Any],
         contents: list[Any],
     ) -> tuple[str, list[Any]] | None:
-        if len(contents) < 2:
-            return None
-
-        cacheable_contents = contents[:-1]
-        live_contents = contents[-1:]
+        # We aim for a STABLE cache that covers the system instruction and tools.
+        # This prevents recreating the cache every turn (which is slow and unreliable).
+        # Conversation history is sent as live content.
+        
         serialized_cache = self._serialize_gemini_cache_payload(
             system_instruction=system_instruction,
             declarations=declarations,
-            contents=cacheable_contents,
+            contents=[], # Stable: do not include history in cache
         )
+        
         if len(serialized_cache) < self._gemini_cache_min_chars:
             return None
 
@@ -356,11 +356,14 @@ class OpenAIChatModel:
                 cache_key=cache_key,
                 system_instruction=system_instruction,
                 declarations=declarations,
-                contents=cacheable_contents,
+                contents=[], # Stable cache
             )
+        
         if not self._gemini_cache_name:
             return None
-        return self._gemini_cache_name, live_contents
+            
+        # For a stable system-only cache, we send the FULL conversation history as request_contents.
+        return self._gemini_cache_name, contents
 
     def _replace_gemini_cache(
         self,
