@@ -19,12 +19,16 @@ from rich.markdown import Markdown
 from rich.table import Table
 
 from prompt_toolkit import PromptSession
+from prompt_toolkit.application import Application
 from prompt_toolkit.history import InMemoryHistory
+from prompt_toolkit.key_binding import KeyBindings
+from prompt_toolkit.layout import Layout
+from prompt_toolkit.layout.containers import Window
+from prompt_toolkit.layout.controls import FormattedTextControl
 from prompt_toolkit.completion import WordCompleter
 from prompt_toolkit.styles import Style as PtStyle
 from prompt_toolkit.auto_suggest import AutoSuggestFromHistory
 from prompt_toolkit.formatted_text import HTML
-from prompt_toolkit.shortcuts import radiolist_dialog
 
 console = Console()
 
@@ -155,16 +159,94 @@ def _clip(value: str, width: int) -> str:
     return text[: max(0, width - 3)] + "..."
 
 
+def _choose_from_list(
+    title: str,
+    header: str,
+    values: list[tuple[str, str]],
+    default: str | None = None,
+) -> str | None:
+    if not values:
+        return None
+
+    selected = 0
+    if default is not None:
+        for idx, (value, _) in enumerate(values):
+            if value == default:
+                selected = idx
+                break
+
+    kb = KeyBindings()
+    result: dict[str, str | None] = {"value": None}
+
+    @kb.add("up")
+    @kb.add("k")
+    def _move_up(event) -> None:
+        nonlocal selected
+        selected = max(0, selected - 1)
+        event.app.invalidate()
+
+    @kb.add("down")
+    @kb.add("j")
+    def _move_down(event) -> None:
+        nonlocal selected
+        selected = min(len(values) - 1, selected + 1)
+        event.app.invalidate()
+
+    @kb.add("enter")
+    def _accept(event) -> None:
+        result["value"] = values[selected][0]
+        event.app.exit()
+
+    @kb.add("escape")
+    @kb.add("c-c")
+    def _cancel(event) -> None:
+        result["value"] = None
+        event.app.exit()
+
+    def get_fragments():
+        fragments: list[tuple[str, str]] = [
+            ("class:title", f"{title}\n"),
+            ("class:hint", "Use Up/Down or j/k. Enter selects. Esc cancels.\n\n"),
+        ]
+        if header:
+            fragments.append(("class:header", f"{header}\n"))
+        for idx, (_, label) in enumerate(values):
+            prefix = "> " if idx == selected else "  "
+            style = "class:selected" if idx == selected else "class:item"
+            fragments.append((style, f"{prefix}{label}\n"))
+        return fragments
+
+    style = PtStyle.from_dict(
+        {
+            "title": "bold #ffd700",
+            "hint": "#666666",
+            "header": "bold #00d7ff",
+            "item": "#cccccc",
+            "selected": "bold #ffd700 bg:#303030",
+        }
+    )
+    control = FormattedTextControl(get_fragments, focusable=True)
+    app = Application(
+        layout=Layout(Window(content=control, always_hide_cursor=True)),
+        key_bindings=kb,
+        style=style,
+        full_screen=False,
+        erase_when_done=True,
+    )
+    app.run()
+    return result["value"]
+
+
 def choose_mode(current_mode: str) -> str | None:
-    return radiolist_dialog(
+    return _choose_from_list(
         title="Choose Mode",
-        text="Select how Kairos should behave for this session.",
+        header="Mode          Behavior",
         values=[
             ("personalized", "personalized  Use memory, preferences, and identity"),
             ("unbiased", "unbiased      Use a neutral prompt with fewer personal assumptions"),
         ],
         default=current_mode,
-    ).run()
+    )
 
 
 def choose_session(client: httpx.Client) -> str | None:
@@ -189,12 +271,12 @@ def choose_session(client: httpx.Client) -> str | None:
         label = f"{updated:<15} {mode} {preview}  [{session_name}]"
         values.append((session_name, label))
 
-    return radiolist_dialog(
+    return _choose_from_list(
         title="Resume Session",
-        text="Updated         Mode         Conversation",
+        header="Updated         Mode         Conversation",
         values=values,
         default=values[0][0],
-    ).run()
+    )
 
 
 def run_chat(session_name: str, mode: str, resume: bool):
