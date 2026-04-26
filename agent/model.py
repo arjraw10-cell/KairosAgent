@@ -33,7 +33,7 @@ class OpenAIChatModel:
         api_key: str | None = None,
     ) -> None:
         self.model_name = model_name
-        self.provider = provider.lower()
+        self.provider = self._normalize_provider(provider)
         self._gemini_explicit_cache_enabled = (
             os.getenv("GEMINI_EXPLICIT_CACHE", "true").strip().lower() == "true"
         )
@@ -43,7 +43,7 @@ class OpenAIChatModel:
         )
         self._gemini_cache_name: str | None = None
         self._gemini_cache_key: str | None = None
-        if self.provider in {"openai", "llama_cpp"}:
+        if self.provider in {"openai", "anthropic", "openai_compatible", "llama_cpp"}:
             try:
                 from openai import OpenAI  # type: ignore
             except ImportError as exc:
@@ -51,10 +51,12 @@ class OpenAIChatModel:
                     "openai package is not installed. Run: pip install -r requirements.txt"
                 ) from exc
             client_kwargs: dict[str, Any] = {}
-            if base_url:
-                client_kwargs["base_url"] = base_url
-            if api_key:
-                client_kwargs["api_key"] = api_key
+            resolved_base_url = self._resolve_openai_base_url(base_url)
+            resolved_api_key = self._resolve_openai_api_key(api_key)
+            if resolved_base_url:
+                client_kwargs["base_url"] = resolved_base_url
+            if resolved_api_key:
+                client_kwargs["api_key"] = resolved_api_key
             self._client = OpenAI(**client_kwargs)
         elif self.provider == "gemini":
             try:
@@ -70,12 +72,48 @@ class OpenAIChatModel:
         else:
             raise ValueError(f"Unsupported provider: {provider}")
 
+    def _normalize_provider(self, provider: str) -> str:
+        normalized = provider.strip().lower().replace("-", "_")
+        aliases = {
+            "openai_compatible_endpoint": "openai_compatible",
+            "openai_compatible_endpoints": "openai_compatible",
+            "compatible": "openai_compatible",
+            "custom": "openai_compatible",
+            "llamacpp": "llama_cpp",
+            "llama": "llama_cpp",
+        }
+        return aliases.get(normalized, normalized)
+
+    def _resolve_openai_base_url(self, configured_base_url: str | None) -> str | None:
+        if configured_base_url:
+            return configured_base_url
+        if self.provider == "anthropic":
+            return os.getenv("ANTHROPIC_BASE_URL", "https://api.anthropic.com/v1/")
+        if self.provider == "openai_compatible":
+            return os.getenv("OPENAI_COMPATIBLE_BASE_URL") or os.getenv("BASE_URL")
+        if self.provider == "llama_cpp":
+            return os.getenv("LLAMA_CPP_BASE_URL", "http://127.0.0.1:8080/v1")
+        return None
+
+    def _resolve_openai_api_key(self, configured_api_key: str | None) -> str | None:
+        if configured_api_key:
+            return configured_api_key
+        if self.provider == "openai":
+            return os.getenv("OPENAI_API_KEY") or os.getenv("API_KEY")
+        if self.provider == "anthropic":
+            return os.getenv("ANTHROPIC_API_KEY") or os.getenv("API_KEY")
+        if self.provider == "openai_compatible":
+            return os.getenv("OPENAI_COMPATIBLE_API_KEY") or os.getenv("API_KEY")
+        if self.provider == "llama_cpp":
+            return os.getenv("LLAMA_CPP_API_KEY", "not-needed")
+        return None
+
     def complete(
         self,
         messages: list[dict[str, Any]],
         tool_schemas: list[dict[str, Any]],
     ) -> ModelResponse:
-        if self.provider in {"openai", "llama_cpp"}:
+        if self.provider in {"openai", "anthropic", "openai_compatible", "llama_cpp"}:
             return self._complete_openai(messages, tool_schemas)
         return self._complete_gemini(messages, tool_schemas)
 

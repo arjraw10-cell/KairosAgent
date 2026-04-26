@@ -1,173 +1,188 @@
-# Minimal Python Agent Framework
+# Kairos
 
-This project provides a small tool-calling agent scaffold with:
+Kairos is a local personal agent you run from your terminal. It can edit files, run shell commands, use a browser, remember preferences, and load custom skills. The cool thing about it is that it's very minimal, so you can actually edit it, and its self-improving, so if you wanna add something, you can just ask the agent to add it and it will. Note that it probably has a few mistakes cause I made it, so please tell me if you find any.
 
-- `read_file`
-- `write_file`
-- `edit_file`
-- `shell`
-- `change_directory`
-- `get_current_directory`
-- Playwright browser tools:
-  - `browser_navigate`
-  - `browser_click`
-  - `browser_type`
-  - `browser_extract`
-  - `browser_snapshot`
-- Dynamic skill tools:
-  - `register_skill`
-  - `list_current_tools`
-- Customization tools:
-  - `update_memory`
-  - `update_preferences`
-  - `update_identity`
-- Runtime tools:
-  - `run_subagent`
-  - `reload_tools`
+## Quick Start
 
-It now routes messages through an `AgentGateway`, so the CLI is just one transport. Other transports such as Telegram can forward inbound text into the same gateway and reuse the same session/runtime behavior.
-
-## Setup
+Install Python dependencies:
 
 ```powershell
 pip install -r requirements.txt
-playwright install chromium
 ```
 
-Set environment variable:
+Run the first-time setup script:
 
 ```powershell
-$env:GEMINI_API_KEY="your-key"
+.\kairos_start.bat
 ```
 
-Or use a `.env` file in the project root:
+This adds the Kairos folder to your user `PATH`, then opens the setup wizard.
 
-```env
-GEMINI_API_KEY="your-key"
-TAVILY_API_KEY="your-key"
+Close and reopen PowerShell after the first setup so the new `PATH` is loaded.
+
+Start the gateway:
+
+```powershell
+kairos gateway
 ```
 
-Optional local `llama.cpp` server settings:
+Open another PowerShell window and start the chat UI:
+
+```powershell
+kairos cli
+```
+
+That is the normal way to use Kairos.
+
+## Commands
+
+```powershell
+kairos gateway      # Start the local gateway
+kairos cli          # Open the terminal chat UI
+kairos configure    # Re-run setup
+```
+
+Inside the chat UI:
+
+```text
+/help              Show commands
+/new               Start a fresh session
+/resume            Choose a saved session
+/mode              Choose personalized or unbiased mode
+/model <name>      Change the active model
+/session           Show token usage
+/exit              Quit
+```
+
+## Setup Wizard
+
+Run setup again any time with:
+
+```powershell
+kairos configure
+```
+
+The wizard asks for:
+
+- Provider
+- Model
+- API key
+- Base URL for custom OpenAI-compatible endpoints
+- Browser setup
+
+It writes:
+
+- `settings.json` for provider/model/base URL
+- `.env` for API keys and browser settings
+
+## Providers
+
+Supported providers:
+
+```text
+gemini
+openai
+anthropic
+openai_compatible
+llama_cpp
+```
+
+The setup wizard handles the config, but the files look like this.
+
+`settings.json`:
+
+```json
+{
+  "provider": "openai",
+  "model": "gpt-4.1-mini",
+  "base_url": null
+}
+```
+
+`.env`:
 
 ```env
+GEMINI_API_KEY="..."
+OPENAI_API_KEY="..."
+ANTHROPIC_API_KEY="..."
+OPENAI_COMPATIBLE_API_KEY="..."
+OPENAI_COMPATIBLE_BASE_URL="http://127.0.0.1:8000/v1"
 LLAMA_CPP_BASE_URL="http://127.0.0.1:8080/v1"
-LLAMA_CPP_MODEL="local-model"
 LLAMA_CPP_API_KEY="not-needed"
 ```
 
-Optional cache settings:
+## Browser
+
+Browser tools use Playwright Chromium. The setup wizard can install it for you.
+
+Manual install:
+
+```powershell
+python -m playwright install chromium
+```
+
+To use your own Chrome, set these in `.env`:
 
 ```env
-GEMINI_EXPLICIT_CACHE="true"
-GEMINI_CACHE_TTL="300s"
-GEMINI_CACHE_MIN_CHARS="12000"
-OPENAI_PROMPT_CACHE_RETENTION="24h"
+CHROME_EXECUTABLE="C:\Path\To\chrome.exe"
+CHROME_USER_DATA="C:\Path\To\Chrome\User Data"
 ```
 
-`GEMINI_EXPLICIT_CACHE` reuses the stable prompt prefix with Gemini when the serialized cached portion is large enough. The CLI token summary now prints `cached=` so you can confirm whether cache hits are happening.
+## Sessions
 
-## Run
+Kairos saves chats automatically:
+
+```text
+chats/<session-name>/transcript.json
+```
+
+Resume the latest session:
 
 ```powershell
-python -m agent.cli --use-llama false --root .
+kairos cli --resume true
 ```
 
-Run the agent against a different workspace without exposing the agent repo itself:
+Resume a specific session:
 
 ```powershell
-python -m agent.cli --workspace C:\path\to\project
+kairos cli --session 2026-04-25_18-30-00 --resume true
 ```
 
-Resume a saved chat session:
+## Folders
+
+```text
+agent/            Kairos source code
+chats/            Saved sessions
+customization/    Memory, user preferences, identity
+skills/           Custom skills
+settings.json     Provider/model config
+.env              Local secrets and browser settings
+```
+
+## Troubleshooting
+
+If `kairos` is not recognized, close and reopen PowerShell. If it still fails, run:
 
 ```powershell
-python -m agent.cli --use-llama false --root . --session 2 --resume true
+.\kairos_start.bat
 ```
 
-Local `llama.cpp` usage:
+If the CLI cannot connect, start the gateway first:
 
 ```powershell
-python -m agent.cli --use-llama true --root .
+kairos gateway
 ```
 
-Chats are saved as numbered JSON transcripts under `chats/`, for example `1.json`, `2.json`, `3.json`. Starting a fresh CLI chat without `--session` automatically picks the next available number. Use `--session N --resume true` to continue a specific saved chat. The CLI prints per-turn and session token totals after each response.
-The agent tracks a current working directory. File and shell tools resolve relative paths from that directory, and the working directory may be moved between the configured workspace and the agent home.
+If browser tools fail:
 
-## Gateway
-
-`agent.gateway.AgentGateway` is the messaging boundary for the runtime.
-
-- Transports send a `GatewayRequest` with a `GatewayAddress` plus message text.
-- The gateway resolves or creates the session runtime, invokes the agent, and persists the transcript.
-- The CLI now just reads stdin and forwards messages into the gateway with `platform="cli"`, using auto-numbered sessions when `--session` is omitted.
-
-Minimal transport example:
-
-```python
-from pathlib import Path
-from agent.gateway import AgentGateway, GatewayAddress, GatewayRequest
-
-gateway = AgentGateway.from_args(
-    workspace_dir=Path(".").resolve(),
-    agent_home_dir=Path(".").resolve(),
-    use_llama=False,
-    max_steps=20,
-)
-
-response = gateway.handle(
-    GatewayRequest(
-        address=GatewayAddress(platform="telegram", session="chat-123"),
-        text="Summarize this repo",
-        resume=True,
-    )
-)
-
-print(response.text)
-gateway.close()
+```powershell
+python -m playwright install chromium
 ```
 
-## Browser Usage Pattern
+If provider calls fail, check `.env`, `settings.json`, and restart the gateway.
 
-1. Call `browser_navigate`.
-2. Use `browser_snapshot` when you need a quick list of interactive elements.
-3. Interact via `browser_click` / `browser_type` using selectors.
-4. Use `browser_extract` when you want page text instead of structure.
-5. Re-run `browser_snapshot` after navigation or interaction if the page changed.
+## Notes
 
-## Adding a Tool
-
-Define a function and decorate it with `@tool(...)`, then register the module/function.
-
-```python
-from agent.tooling import tool, ToolContext
-
-@tool(
-    name="echo",
-    description="Echo text back.",
-    input_schema={
-        "type": "object",
-        "properties": {"text": {"type": "string"}},
-        "required": ["text"],
-        "additionalProperties": False,
-    },
-)
-def echo(context: ToolContext, text: str) -> dict:
-    return {"text": text}
-```
-
-## Dynamic Skills
-
-Recommended flow:
-
-1. Call `change_directory` with `location="skills_root"`.
-2. Use `write_file` / `edit_file` to create or update the skill folder and its files.
-3. Call `register_skill` with the skill folder name to load or reload it in the current session.
-
-Explainer skills need `skill.md`.
-
-Executor skills typically include:
-
-- `skill.md`
-- `schema.json`
-- `start.bat`
-- supporting code files such as `run.py`
+- `.env` is ignored by git.
+- `chats/`, `skills/`, and `customization/` contents are ignored by git except for `.gitkeep`.
+- `setup.py` is a setup wizard for this repo, not a Python packaging script.

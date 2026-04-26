@@ -26,7 +26,7 @@ from agent.tooling import tool, ToolContext
             },
             "endpoint": {
                 "type": "string",
-                "description": "Which endpoint provider to use (e.g., 'gemini', 'llama_cpp'). Defaults to 'gemini'."
+                "description": "Which endpoint provider to use (e.g., 'gemini', 'openai', 'anthropic', 'openai_compatible', 'llama_cpp'). Defaults to 'gemini'."
             }
         },
         "required": ["prompt"]

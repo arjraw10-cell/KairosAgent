@@ -46,7 +46,7 @@ class GatewayResponse:
     total_usage: dict[str, int]
     transcript_path: Path
 
-@dataclass(frozen=True)
+@dataclass
 class GatewayConfig:
     workspace_dir: Path
     agent_home_dir: Path
@@ -88,7 +88,53 @@ def json_safe(value: Any) -> Any:
 def provider_label(provider: str) -> str:
     if provider == "llama_cpp":
         return "llama.cpp"
+    if provider == "openai_compatible":
+        return "OpenAI-compatible"
     return provider
+
+def normalize_provider(provider: str) -> str:
+    normalized = provider.strip().lower().replace("-", "_")
+    aliases = {
+        "openai_compatible_endpoint": "openai_compatible",
+        "openai_compatible_endpoints": "openai_compatible",
+        "compatible": "openai_compatible",
+        "custom": "openai_compatible",
+        "llamacpp": "llama_cpp",
+        "llama": "llama_cpp",
+    }
+    return aliases.get(normalized, normalized)
+
+def default_model_for_provider(provider: str) -> str:
+    defaults = {
+        "gemini": os.getenv("GEMINI_MODEL", "gemini-3-flash-preview"),
+        "openai": os.getenv("OPENAI_MODEL", "gpt-4.1-mini"),
+        "anthropic": os.getenv("ANTHROPIC_MODEL", "claude-sonnet-4-20250514"),
+        "openai_compatible": os.getenv("OPENAI_COMPATIBLE_MODEL", "local-model"),
+        "llama_cpp": os.getenv("LLAMA_CPP_MODEL", "local-model"),
+    }
+    return defaults.get(provider, "gpt-4.1-mini")
+
+def default_base_url_for_provider(provider: str) -> str | None:
+    if provider == "anthropic":
+        return os.getenv("ANTHROPIC_BASE_URL", "https://api.anthropic.com/v1/")
+    if provider == "openai_compatible":
+        return os.getenv("OPENAI_COMPATIBLE_BASE_URL") or os.getenv("BASE_URL")
+    if provider == "llama_cpp":
+        return os.getenv("LLAMA_CPP_BASE_URL", "http://127.0.0.1:8080/v1")
+    return None
+
+def api_key_for_provider(provider: str) -> str | None:
+    if provider == "gemini":
+        return os.getenv("GEMINI_API_KEY") or os.getenv("API_KEY")
+    if provider == "openai":
+        return os.getenv("OPENAI_API_KEY") or os.getenv("API_KEY")
+    if provider == "anthropic":
+        return os.getenv("ANTHROPIC_API_KEY") or os.getenv("API_KEY")
+    if provider == "openai_compatible":
+        return os.getenv("OPENAI_COMPATIBLE_API_KEY") or os.getenv("API_KEY")
+    if provider == "llama_cpp":
+        return os.getenv("LLAMA_CPP_API_KEY", "not-needed")
+    return os.getenv("API_KEY")
 
 # --- Gateway Implementation ---
 
@@ -108,24 +154,23 @@ class AgentGateway:
     ) -> AgentGateway:
         settings_path = agent_home_dir / "settings.json"
         
-        provider = "gemini"
-        model_name = os.getenv("GEMINI_MODEL", "gemini-3.1-pro-lite-preview")
-        base_url = None
-        # Always prioritize the "API_KEY" env var for security
-        api_key = os.getenv("API_KEY")
+        provider = normalize_provider(os.getenv("AGENT_PROVIDER", "gemini"))
+        model_name = default_model_for_provider(provider)
+        base_url = default_base_url_for_provider(provider)
+        api_key = None
         
         if settings_path.exists():
             try:
                 settings = json.loads(settings_path.read_text())
-                provider = settings.get("provider", provider)
-                model_name = settings.get("model", model_name)
-                # base_url from settings is fine
-                base_url = settings.get("base_url", base_url)
-                # If API_KEY wasn't in env, maybe it's in settings (though user wants it in env)
-                if not api_key:
-                    api_key = settings.get("api_key")
+                provider = normalize_provider(settings.get("provider", provider))
+                model_name = settings.get("model") or default_model_for_provider(provider)
+                base_url = settings.get("base_url") or default_base_url_for_provider(provider)
+                api_key = settings.get("api_key")
             except Exception as e:
                 print(f"Failed to load settings.json: {e}")
+
+        if not api_key:
+            api_key = api_key_for_provider(provider)
 
         return cls(
             GatewayConfig(
@@ -413,6 +458,52 @@ async def get_config():
 @app.get("/sessions/latest")
 async def latest_session():
     return {"session": gateway.latest_session_name()}
+
+@app.get("/sessions")
+async def list_sessions():
+    chats_dir = gateway.config.agent_home_dir / "chats"
+    if not chats_dir.exists():
+        return {"sessions": []}
+
+    sessions: list[dict[str, Any]] = []
+    transcript_paths = list(chats_dir.glob("*/transcript.json"))
+    transcript_paths.extend(chats_dir.glob("*.json"))
+
+    for transcript_path in transcript_paths:
+        try:
+            stat = transcript_path.stat()
+            payload = json.loads(transcript_path.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+
+        session_name = str(payload.get("session_name") or transcript_path.stem)
+        if transcript_path.name == "transcript.json":
+            session_name = transcript_path.parent.name
+
+        preview = ""
+        for message in payload.get("messages", []):
+            if message.get("role") == "user":
+                content = str(message.get("content", "")).strip()
+                if content.startswith("[SYSTEM MESSAGE:"):
+                    continue
+                preview = " ".join(content.split())
+                break
+
+        sessions.append(
+            {
+                "session_name": session_name,
+                "updated_at": payload.get("updated_at"),
+                "created_ts": stat.st_ctime,
+                "updated_ts": stat.st_mtime,
+                "mode": payload.get("mode", ""),
+                "provider": payload.get("provider", ""),
+                "model": payload.get("model", ""),
+                "preview": preview,
+            }
+        )
+
+    sessions.sort(key=lambda item: float(item.get("updated_ts") or 0), reverse=True)
+    return {"sessions": sessions}
 
 @app.get("/sessions/next")
 async def next_session():

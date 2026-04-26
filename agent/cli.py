@@ -6,6 +6,7 @@ import json
 import threading
 import time
 import os
+from datetime import datetime, timezone
 
 import keyboard
 
@@ -23,6 +24,7 @@ from prompt_toolkit.completion import WordCompleter
 from prompt_toolkit.styles import Style as PtStyle
 from prompt_toolkit.auto_suggest import AutoSuggestFromHistory
 from prompt_toolkit.formatted_text import HTML
+from prompt_toolkit.shortcuts import radiolist_dialog
 
 console = Console()
 
@@ -106,9 +108,9 @@ def show_help():
     table.add_row("/clear", "Clear the terminal screen.")
     table.add_row("/exit", "Exit the CLI.")
     table.add_row("/new", "Start a completely fresh session.")
-    table.add_row("/resume <id>", "Resume a specific session (leave blank for latest).")
+    table.add_row("/resume", "Choose a saved session to resume.")
     table.add_row("/model <name>", "Switch the active model and update settings.json.")
-    table.add_row("/mode <type>", "Switch between 'personalized' and 'unbiased'.")
+    table.add_row("/mode", "Choose personalized or unbiased mode.")
     table.add_row("/session", "Show token usage statistics for the current run.")
     
     console.print(Panel(table, border_style="#444444", expand=False))
@@ -125,6 +127,74 @@ def _close_remote_session(client: httpx.Client, session_name: str, mode: str) ->
         client.post(f"{GATEWAY_URL}/sessions/close", json=payload)
     except Exception:
         pass
+
+
+def _format_age(timestamp: float | int | None) -> str:
+    if not timestamp:
+        return "-"
+    seconds = max(0, int(datetime.now(timezone.utc).timestamp() - float(timestamp)))
+    units = [
+        ("year", 365 * 24 * 60 * 60),
+        ("month", 30 * 24 * 60 * 60),
+        ("day", 24 * 60 * 60),
+        ("hour", 60 * 60),
+        ("minute", 60),
+    ]
+    for name, size in units:
+        value = seconds // size
+        if value:
+            suffix = "" if value == 1 else "s"
+            return f"{value} {name}{suffix} ago"
+    return "just now"
+
+
+def _clip(value: str, width: int) -> str:
+    text = " ".join(str(value or "").split())
+    if len(text) <= width:
+        return text.ljust(width)
+    return text[: max(0, width - 3)] + "..."
+
+
+def choose_mode(current_mode: str) -> str | None:
+    return radiolist_dialog(
+        title="Choose Mode",
+        text="Select how Kairos should behave for this session.",
+        values=[
+            ("personalized", "personalized  Use memory, preferences, and identity"),
+            ("unbiased", "unbiased      Use a neutral prompt with fewer personal assumptions"),
+        ],
+        default=current_mode,
+    ).run()
+
+
+def choose_session(client: httpx.Client) -> str | None:
+    try:
+        resp = client.get(f"{GATEWAY_URL}/sessions")
+        resp.raise_for_status()
+        sessions = resp.json().get("sessions", [])
+    except Exception as exc:
+        console.print(f"[bold red]Could not load sessions:[/bold red] {exc}")
+        return None
+
+    if not sessions:
+        console.print("[bold red]No saved sessions found.[/bold red]")
+        return None
+
+    values = []
+    for item in sessions[:50]:
+        session_name = str(item.get("session_name", ""))
+        updated = _format_age(item.get("updated_ts"))
+        mode = _clip(str(item.get("mode", "")) or "-", 12)
+        preview = _clip(str(item.get("preview", "")) or "(empty session)", 54)
+        label = f"{updated:<15} {mode} {preview}  [{session_name}]"
+        values.append((session_name, label))
+
+    return radiolist_dialog(
+        title="Resume Session",
+        text="Updated         Mode         Conversation",
+        values=values,
+        default=values[0][0],
+    ).run()
 
 
 def run_chat(session_name: str, mode: str, resume: bool):
@@ -194,15 +264,17 @@ def run_chat(session_name: str, mode: str, resume: bool):
             elif text_lower.startswith("/mode"):
                 parts = user_input.split(" ", 1)
                 if len(parts) < 2:
-                    console.print(f"[dim]Current Mode: {current_mode}. Use /mode personalized or /mode unbiased[/dim]")
+                    target_mode = choose_mode(current_mode)
                 else:
                     target_mode = parts[1].strip().lower()
-                    if target_mode in ["personalized", "unbiased"]:
-                        _close_remote_session(client, current_session, current_mode)
-                        current_mode = target_mode
-                        console.print(f"[bold green]Mode switched to {current_mode}[/bold green]")
-                    else:
-                        console.print("[bold red]Invalid mode. Use 'personalized' or 'unbiased'.[/bold red]")
+                if target_mode is None:
+                    continue
+                if target_mode in ["personalized", "unbiased"]:
+                    _close_remote_session(client, current_session, current_mode)
+                    current_mode = target_mode
+                    console.print(f"[bold green]Mode switched to {current_mode}[/bold green]")
+                else:
+                    console.print("[bold red]Invalid mode. Use 'personalized' or 'unbiased'.[/bold red]")
                 continue
             elif text_lower.startswith("/new"):
                 _close_remote_session(client, current_session, current_mode)
@@ -220,19 +292,12 @@ def run_chat(session_name: str, mode: str, resume: bool):
                 try:
                     if len(parts) > 1:
                         target = parts[1].strip()
-                        # Use address.session logic on gateway to resolve/fuzzy match
-                        payload = {"address": {"platform": "cli", "session": target}, "text": "ping", "resume": True}
-                        # We don't want to actually send a message, we just want to resolve the name.
-                        # But we don't have a lookup-only endpoint yet.
-                        # Actually, let's just update current_session and let the next message handle it.
-                        # However, to be safe, we can check if it exists via a small GET or just trust the next turn.
                         current_session = target
                     else:
-                        resp = client.get(f"{GATEWAY_URL}/sessions/latest").json()
-                        current_session = resp.get('session')
-                        if not current_session:
-                            console.print("[bold red]No previous session found.[/bold red]")
+                        target = choose_session(client)
+                        if not target:
                             continue
+                        current_session = target
                     console.print(f"[bold green]Ready to resume session:[/bold green] {current_session}")
                 except Exception as e:
                     console.print(f"[bold red]Error connecting to gateway: {e}[/bold red]")
