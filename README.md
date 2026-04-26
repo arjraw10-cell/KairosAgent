@@ -1,19 +1,27 @@
 # Kairos
 
-Kairos is a local personal agent you run from your terminal. It can edit files, run shell commands, use a browser, remember preferences, and load custom skills. The cool thing about it is that it's very minimal, so you can actually edit it, and its self-improving, so if you wanna add something, you can just ask the agent to add it and it will. Note that it probably has a few mistakes cause I made it, so please tell me if you find any.
+Kairos is a local personal agent you run from your terminal. It can edit files, run shell commands, use a browser, remember preferences, and load custom skills. The cool thing about it is that it's very minimal, so you can actually edit it, and its self-improving, so if you wanna add something, you can just ask the agent to add it and it will. Note that it probably has a few mistakes cause I made it, so please tell me if you find any. Its only on windows rn but if people use I'll make a mac version.
 
 ## Quick Start
 
 Install Python dependencies:
 
 ```powershell
-pip install -r requirements.txt
+git clone https://github.com/arjraw10-cell/KairosAgent/
+```
+
+```powershell
+cd KairosAgent
+```
+
+```powershell
+py -m pip install -r requirements.txt
 ```
 
 Run the first-time setup script:
 
 ```powershell
-.\kairos_start.bat
+.\kairos_start
 ```
 
 This adds the Kairos folder to your user `PATH`, then opens the setup wizard.
